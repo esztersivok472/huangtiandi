@@ -1,0 +1,302 @@
+from __future__ import annotations
+
+import threading
+import tkinter as tk
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
+
+from .core import ConversationEngine
+from .openclaw_client import OpenClawClient, OpenClawEndpoint, discover_openclaw
+from .voice import VoiceService
+
+
+class OpenClawApp(tk.Tk):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title("OpenClaw Voice Avatar Demo")
+        self.geometry("1020x700")
+
+        self.engine = ConversationEngine()
+        self.voice = VoiceService()
+        self.openclaw_client: OpenClawClient | None = None
+        self.avatar_photo: tk.PhotoImage | None = None
+
+        self.continuous_mode = tk.BooleanVar(value=False)
+        self._continuous_running = False
+
+        self._build_ui()
+        self._update_status("idle")
+        self.after(150, self._auto_discover_openclaw)
+
+    def _build_ui(self) -> None:
+        top = ttk.Frame(self, padding=12)
+        top.pack(fill="x")
+
+        ttk.Label(top, text="角色风格").pack(side="left")
+        self.style_var = tk.StringVar(value="商务")
+        style_box = ttk.Combobox(
+            top,
+            textvariable=self.style_var,
+            state="readonly",
+            values=["商务", "动漫", "科幻", "写实", "可爱"],
+            width=10,
+        )
+        style_box.pack(side="left", padx=(8, 16))
+        style_box.bind("<<ComboboxSelected>>", self._on_style_change)
+
+        ttk.Button(top, text="上传头像图片", command=self._upload_image).pack(side="left")
+        ttk.Button(top, text="图片生成人物", command=self._generate_avatar).pack(side="left", padx=8)
+        ttk.Button(top, text="开始通话", command=self._start_call).pack(side="left", padx=8)
+        ttk.Button(top, text="结束通话", command=self._end_call).pack(side="left")
+        ttk.Button(top, text="打断", command=self._interrupt).pack(side="left", padx=8)
+
+        self.status_var = tk.StringVar(value="状态: idle")
+        ttk.Label(top, textvariable=self.status_var, foreground="#0055AA").pack(side="right")
+
+        conn = ttk.Frame(self, padding=(12, 0, 12, 8))
+        conn.pack(fill="x")
+
+        ttk.Label(conn, text="OpenClaw地址:").pack(side="left")
+        self.endpoint_var = tk.StringVar(value="自动检测中...")
+        ttk.Entry(conn, textvariable=self.endpoint_var, width=44).pack(side="left", padx=(8, 6))
+        ttk.Button(conn, text="自动检测", command=self._auto_discover_openclaw).pack(side="left")
+        ttk.Button(conn, text="连接测试", command=self._manual_connect_openclaw).pack(side="left", padx=6)
+
+        self.conn_var = tk.StringVar(value="OpenClaw: 未连接")
+        ttk.Label(conn, textvariable=self.conn_var, foreground="#6B5A00").pack(side="left", padx=10)
+
+        main = ttk.Frame(self, padding=12)
+        main.pack(fill="both", expand=True)
+
+        left = ttk.LabelFrame(main, text="人物预览", padding=8)
+        left.pack(side="left", fill="y")
+
+        self.avatar_canvas = tk.Canvas(left, width=180, height=180, bg="#f8f8f8", highlightthickness=0)
+        self.avatar_canvas.pack()
+        self._draw_default_avatar()
+
+        self.avatar_meta_var = tk.StringVar(value="类型: preset\n模型ID: -")
+        ttk.Label(left, textvariable=self.avatar_meta_var).pack(pady=(10, 0))
+
+        right = ttk.LabelFrame(main, text="通话记录", padding=8)
+        right.pack(side="left", fill="both", expand=True, padx=(12, 0))
+
+        self.chat = tk.Text(right, height=28, wrap="word")
+        self.chat.pack(fill="both", expand=True)
+        self.chat.insert("end", "[系统] 已就绪。请先开始通话。\n")
+        self.chat.configure(state="disabled")
+
+        bottom = ttk.Frame(self, padding=12)
+        bottom.pack(fill="x")
+
+        self.input_var = tk.StringVar()
+        entry = ttk.Entry(bottom, textvariable=self.input_var)
+        entry.pack(side="left", fill="x", expand=True)
+        entry.bind("<Return>", lambda _e: self._send_text())
+
+        ttk.Button(bottom, text="发送", command=self._send_text).pack(side="left", padx=8)
+        ttk.Button(bottom, text="🎤 语音输入", command=self._voice_input_once).pack(side="left")
+        ttk.Checkbutton(bottom, text="连续语音", variable=self.continuous_mode).pack(side="left", padx=8)
+        ttk.Button(bottom, text="开始连续听说", command=self._start_continuous_voice).pack(side="left")
+
+        stt = "可用" if self.voice.stt_enabled else "不可用(缺少 speech_recognition/pyaudio)"
+        tts = "可用" if self.voice.tts_enabled else "不可用(缺少 pyttsx3)"
+        ttk.Label(bottom, text=f"STT: {stt} | TTS: {tts}").pack(side="left", padx=12)
+
+    def _draw_default_avatar(self) -> None:
+        c = self.avatar_canvas
+        c.delete("all")
+        c.create_oval(30, 20, 150, 140, fill="#FFD39B", outline="#C79A5B", width=2)
+        c.create_oval(60, 65, 72, 77, fill="black")
+        c.create_oval(108, 65, 120, 77, fill="black")
+        c.create_arc(68, 82, 112, 110, start=200, extent=140, style="arc", width=3)
+        c.create_text(90, 160, text="OpenClaw", fill="#1f4c8f", font=("Arial", 12, "bold"))
+
+    def _append_chat(self, line: str) -> None:
+        self.chat.configure(state="normal")
+        self.chat.insert("end", line + "\n")
+        self.chat.see("end")
+        self.chat.configure(state="disabled")
+
+    def _update_status(self, state: str) -> None:
+        self.status_var.set(f"状态: {state}")
+
+    def _refresh_avatar_meta(self) -> None:
+        avatar = self.engine.avatar
+        self.avatar_meta_var.set(f"类型: {avatar.avatar_type}\n模型ID: {avatar.model_id or '-'}")
+
+    def _set_connected(self, client: OpenClawClient | None) -> None:
+        self.openclaw_client = client
+        if client:
+            self.conn_var.set(f"OpenClaw: 已连接 ({client.endpoint.base_url})")
+            self.endpoint_var.set(client.endpoint.base_url)
+        else:
+            self.conn_var.set("OpenClaw: 未连接（将使用本地离线回复）")
+
+    def _auto_discover_openclaw(self) -> None:
+        def _job() -> None:
+            client = discover_openclaw()
+            self.after(0, lambda: self._set_connected(client))
+            if client:
+                self.after(0, lambda: self._append_chat(f"[系统] 自动连接到 OpenClaw: {client.endpoint.base_url}"))
+            else:
+                self.after(0, lambda: self._append_chat("[系统] 未自动发现 OpenClaw 服务，当前使用本地离线回复。"))
+
+        threading.Thread(target=_job, daemon=True).start()
+
+    def _manual_connect_openclaw(self) -> None:
+        url = self.endpoint_var.get().strip()
+        if not url:
+            messagebox.showwarning("提示", "请输入 OpenClaw 地址，例如 http://127.0.0.1:3000")
+            return
+        client = OpenClawClient(OpenClawEndpoint(url))
+        if client.health():
+            self._set_connected(client)
+            self._append_chat(f"[系统] OpenClaw 连接成功: {url}")
+        else:
+            self._set_connected(None)
+            self._append_chat(f"[系统] OpenClaw 连接失败: {url}")
+
+    def _on_style_change(self, _event=None) -> None:
+        style = self.style_var.get()
+        self.engine.set_avatar_style(style)
+        self._append_chat(f"[系统] 已切换风格: {style}")
+
+    def _upload_image(self) -> None:
+        path = filedialog.askopenfilename(
+            title="选择头像图片",
+            filetypes=[("Image", "*.png *.gif *.ppm *.pgm *.jpg *.jpeg"), ("All", "*.*")],
+        )
+        if not path:
+            return
+
+        try:
+            self.engine.set_avatar_image(path)
+            ext = Path(path).suffix.lower()
+            self.avatar_canvas.delete("all")
+            if ext == ".png":
+                self.avatar_photo = tk.PhotoImage(file=path)
+                self.avatar_canvas.create_image(90, 90, image=self.avatar_photo)
+            else:
+                self._draw_default_avatar()
+                self.avatar_canvas.create_text(90, 20, text=f"已上传: {Path(path).name}", fill="#333")
+            self._append_chat(f"[系统] 头像已更新: {Path(path).name}")
+            self._refresh_avatar_meta()
+        except Exception as exc:
+            messagebox.showerror("上传失败", str(exc))
+
+    def _generate_avatar(self) -> None:
+        path = self.engine.avatar.image_path
+        if not path:
+            messagebox.showwarning("提示", "请先上传一张头像图片")
+            return
+
+        avatar = self.engine.generate_avatar_from_image(path)
+        self.style_var.set(avatar.style)
+        self._append_chat(f"[系统] 已根据图片生成人物: {avatar.name} ({avatar.model_id})")
+        self._refresh_avatar_meta()
+
+    def _start_call(self) -> None:
+        self.engine.start_call()
+        self._update_status(self.engine.state)
+        self._append_chat("[系统] 通话已连接，开始说话吧。")
+
+    def _end_call(self) -> None:
+        self._continuous_running = False
+        self.engine.end_call()
+        self._update_status(self.engine.state)
+        self._append_chat("[系统] 通话已结束。")
+
+    def _interrupt(self) -> None:
+        self.engine.interrupt()
+        self.voice.stop_speaking()
+        self._update_status(self.engine.state)
+        self._append_chat("[系统] 已打断当前播报，重新进入监听。")
+
+    def _voice_input_once(self) -> None:
+        if self.engine.state == "idle":
+            messagebox.showwarning("提示", "请先点击“开始通话”。")
+            return
+        if not self.voice.stt_enabled:
+            messagebox.showwarning("提示", "当前环境未安装语音识别依赖，请先安装 requirements 中的可选语音包")
+            return
+
+        self._append_chat("[系统] 正在监听麦克风，请说话（最多12秒）...")
+        self._update_status("listening")
+
+        def _job() -> None:
+            try:
+                text = self.voice.listen_once()
+                self.after(0, lambda: self._on_voice_text(text))
+            except Exception as exc:
+                self.after(0, lambda: self._append_chat(f"[系统] 语音识别失败: {exc}"))
+
+        threading.Thread(target=_job, daemon=True).start()
+
+    def _start_continuous_voice(self) -> None:
+        if self.engine.state == "idle":
+            messagebox.showwarning("提示", "请先点击“开始通话”。")
+            return
+        if not self.continuous_mode.get():
+            messagebox.showinfo("提示", "请先勾选“连续语音”")
+            return
+        if not self.voice.stt_enabled:
+            messagebox.showwarning("提示", "当前环境未安装语音识别依赖")
+            return
+        if self._continuous_running:
+            self._append_chat("[系统] 连续语音已在运行中。")
+            return
+
+        self._continuous_running = True
+        self._append_chat("[系统] 连续语音已开启，结束通话将自动停止。")
+
+        def _loop() -> None:
+            while self._continuous_running and self.engine.state != "idle":
+                try:
+                    text = self.voice.listen_once(timeout=4, phrase_time_limit=10)
+                    self.after(0, lambda t=text: self._on_voice_text(t))
+                except Exception:
+                    # Continuous mode tolerates silence/timeouts.
+                    continue
+
+        threading.Thread(target=_loop, daemon=True).start()
+
+    def _on_voice_text(self, text: str) -> None:
+        self.input_var.set(text)
+        self._append_chat(f"[语音识别] {text}")
+        self._send_text()
+
+    def _send_text(self) -> None:
+        if self.engine.state == "idle":
+            messagebox.showwarning("提示", "请先点击“开始通话”。")
+            return
+
+        text = self.input_var.get().strip()
+        if not text:
+            return
+
+        self.input_var.set("")
+        self._append_chat(f"你: {text}")
+
+        try:
+            if self.openclaw_client:
+                reply = self.openclaw_client.chat(text)
+            else:
+                reply = self.engine.handle_user_text(text)
+            self._update_status("replying")
+            self._append_chat(f"OpenClaw: {reply}")
+        except Exception as exc:
+            reply = self.engine.handle_user_text(text)
+            self._append_chat(f"[系统] OpenClaw请求失败，已回退本地回复: {exc}")
+            self._append_chat(f"OpenClaw(本地): {reply}")
+
+        self.voice.speak_async(reply, on_done=self._on_tts_done)
+
+    def _on_tts_done(self) -> None:
+        self.engine.after_reply()
+        self.after(0, lambda: self._update_status(self.engine.state))
+
+
+def run() -> None:
+    app = OpenClawApp()
+    app.mainloop()
