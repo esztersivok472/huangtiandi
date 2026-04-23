@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -19,6 +20,12 @@ class OpenClawApp(tk.Tk):
         self.engine = ConversationEngine()
         self.voice = VoiceService()
         self.openclaw_client: OpenClawClient | None = None
+        self.openclaw_process = None
+        self._avatar_enabled = False
+        self.mock_server: MockOpenClawServer | None = None
+        self._discovering = False
+
+        self.avatar_photo: tk.PhotoImage | None = None
         self.avatar_photo: tk.PhotoImage | None = None
 
         self.continuous_mode = tk.BooleanVar(value=False)
@@ -45,6 +52,9 @@ class OpenClawApp(tk.Tk):
         style_box.bind("<<ComboboxSelected>>", self._on_style_change)
 
         ttk.Button(top, text="上传头像图片", command=self._upload_image).pack(side="left")
+        ttk.Button(top, text="上传3D模型", command=self._upload_3d_model).pack(side="left", padx=8)
+        ttk.Button(top, text="应用参考形象", command=self._apply_reference_avatar).pack(side="left")
+        ttk.Button(top, text="打开3D预览", command=self._open_3d_preview).pack(side="left", padx=6)
         ttk.Button(top, text="图片生成人物", command=self._generate_avatar).pack(side="left", padx=8)
         ttk.Button(top, text="开始通话", command=self._start_call).pack(side="left", padx=8)
         ttk.Button(top, text="结束通话", command=self._end_call).pack(side="left")
@@ -52,6 +62,18 @@ class OpenClawApp(tk.Tk):
 
         self.status_var = tk.StringVar(value="状态: idle")
         ttk.Label(top, textvariable=self.status_var, foreground="#0055AA").pack(side="right")
+
+        oc = ttk.Frame(self, padding=(12, 0, 12, 6))
+        oc.pack(fill="x")
+        ttk.Label(oc, text="OpenClaw程序路径:").pack(side="left")
+        self.exec_var = tk.StringVar(value="")
+        ttk.Entry(oc, textvariable=self.exec_var, width=44).pack(side="left", padx=(6, 4))
+        ttk.Label(oc, text="工作目录:").pack(side="left", padx=(8, 2))
+        self.workdir_var = tk.StringVar(value=str(default_openclaw_workdir()))
+        ttk.Entry(oc, textvariable=self.workdir_var, width=28).pack(side="left", padx=(0, 4))
+        ttk.Button(oc, text="自动查找", command=self._find_openclaw_exec).pack(side="left")
+        ttk.Button(oc, text="启动OpenClaw", command=self._start_openclaw_exec).pack(side="left", padx=6)
+        ttk.Button(oc, text="启动模拟OpenClaw", command=self._start_mock_openclaw).pack(side="left", padx=6)
 
         conn = ttk.Frame(self, padding=(12, 0, 12, 8))
         conn.pack(fill="x")
