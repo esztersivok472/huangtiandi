@@ -24,7 +24,6 @@ class AvatarProfile:
     avatar_type: AvatarType = "preset"
     image_path: str | None = None
     model_id: str | None = None
-    model_path: str | None = None
 
 
 class ConversationEngine:
@@ -62,15 +61,6 @@ class ConversationEngine:
         self.avatar.model_id = f"mdl_{digest}"
         self.avatar.name = f"用户形象_{digest[:6]}"
         self.avatar.style = "上传生成"
-        return self.avatar
-
-
-    def apply_reference_avatar_preset(self) -> AvatarProfile:
-        """Apply a stylized preset based on the provided reference character image."""
-        self.avatar.name = "霓虹潮流女孩"
-        self.avatar.style = "二次元写实-霓虹街潮"
-        self.avatar.avatar_type = "generated"
-        self.avatar.model_id = "preset_neon_girl_v1"
         return self.avatar
 
     def start_call(self) -> None:

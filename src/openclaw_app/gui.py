@@ -5,11 +5,8 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-import webbrowser
 
 from .core import ConversationEngine
-from .launcher import default_openclaw_workdir, find_openclaw_executable, start_openclaw
-from .mock_server import MockOpenClawServer
 from .openclaw_client import OpenClawClient, OpenClawEndpoint, discover_openclaw
 from .voice import VoiceService
 
@@ -18,7 +15,7 @@ class OpenClawApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("OpenClaw Voice Avatar Demo")
-        self.geometry("1100x760")
+        self.geometry("1020x700")
 
         self.engine = ConversationEngine()
         self.voice = VoiceService()
@@ -29,6 +26,8 @@ class OpenClawApp(tk.Tk):
         self._discovering = False
 
         self.avatar_photo: tk.PhotoImage | None = None
+        self.avatar_photo: tk.PhotoImage | None = None
+
         self.continuous_mode = tk.BooleanVar(value=False)
         self._continuous_running = False
 
@@ -94,17 +93,17 @@ class OpenClawApp(tk.Tk):
         left = ttk.LabelFrame(main, text="人物预览", padding=8)
         left.pack(side="left", fill="y")
 
-        self.avatar_canvas = tk.Canvas(left, width=220, height=220, bg="#f8f8f8", highlightthickness=0)
+        self.avatar_canvas = tk.Canvas(left, width=180, height=180, bg="#f8f8f8", highlightthickness=0)
         self.avatar_canvas.pack()
         self._draw_default_avatar()
 
-        self.avatar_meta_var = tk.StringVar(value="类型: preset\n模型ID: -\n3D模型: -")
+        self.avatar_meta_var = tk.StringVar(value="类型: preset\n模型ID: -")
         ttk.Label(left, textvariable=self.avatar_meta_var).pack(pady=(10, 0))
 
         right = ttk.LabelFrame(main, text="通话记录", padding=8)
         right.pack(side="left", fill="both", expand=True, padx=(12, 0))
 
-        self.chat = tk.Text(right, height=30, wrap="word")
+        self.chat = tk.Text(right, height=28, wrap="word")
         self.chat.pack(fill="both", expand=True)
         self.chat.insert("end", "[系统] 已就绪。请先开始通话。\n")
         self.chat.configure(state="disabled")
@@ -129,11 +128,11 @@ class OpenClawApp(tk.Tk):
     def _draw_default_avatar(self) -> None:
         c = self.avatar_canvas
         c.delete("all")
-        c.create_oval(40, 30, 180, 170, fill="#FFD39B", outline="#C79A5B", width=2)
-        c.create_oval(75, 80, 88, 93, fill="black")
-        c.create_oval(132, 80, 145, 93, fill="black")
-        c.create_arc(82, 100, 142, 132, start=200, extent=140, style="arc", width=3)
-        c.create_text(110, 196, text="OpenClaw", fill="#1f4c8f", font=("Arial", 14, "bold"))
+        c.create_oval(30, 20, 150, 140, fill="#FFD39B", outline="#C79A5B", width=2)
+        c.create_oval(60, 65, 72, 77, fill="black")
+        c.create_oval(108, 65, 120, 77, fill="black")
+        c.create_arc(68, 82, 112, 110, start=200, extent=140, style="arc", width=3)
+        c.create_text(90, 160, text="OpenClaw", fill="#1f4c8f", font=("Arial", 12, "bold"))
 
     def _append_chat(self, line: str) -> None:
         self.chat.configure(state="normal")
@@ -146,79 +145,26 @@ class OpenClawApp(tk.Tk):
 
     def _refresh_avatar_meta(self) -> None:
         avatar = self.engine.avatar
-        model_name = Path(avatar.model_path).name if avatar.model_path else "-"
-        self.avatar_meta_var.set(f"类型: {avatar.avatar_type}\n模型ID: {avatar.model_id or '-'}\n3D模型: {model_name}")
-
-    def _find_openclaw_exec(self) -> None:
-        path = find_openclaw_executable()
-        if path:
-            self.exec_var.set(path)
-            self._append_chat(f"[系统] 已找到 OpenClaw 程序: {path}")
-        else:
-            self._append_chat("[系统] 未找到 OpenClaw 程序，请手动安装或填写路径。")
-
-    def _start_openclaw_exec(self) -> None:
-        path = self.exec_var.get().strip()
-        if not path:
-            self._find_openclaw_exec()
-            path = self.exec_var.get().strip()
-        if not path:
-            return
-
-        try:
-            self.openclaw_process = start_openclaw(path, workdir=self.workdir_var.get().strip() or None)
-            self._append_chat("[系统] 已尝试启动 OpenClaw 程序，正在自动检测连接...")
-            self.after(1200, self._auto_discover_openclaw)
-        except Exception as exc:
-            self._append_chat(f"[系统] 启动 OpenClaw 失败: {exc}")
+        self.avatar_meta_var.set(f"类型: {avatar.avatar_type}\n模型ID: {avatar.model_id or '-'}")
 
     def _set_connected(self, client: OpenClawClient | None) -> None:
         self.openclaw_client = client
         if client:
             self.conn_var.set(f"OpenClaw: 已连接 ({client.endpoint.base_url})")
             self.endpoint_var.set(client.endpoint.base_url)
-            self._activate_connected_features()
         else:
             self.conn_var.set("OpenClaw: 未连接（将使用本地离线回复）")
-            self.endpoint_var.set("未发现服务")
-
-    def _activate_connected_features(self) -> None:
-        if self._avatar_enabled:
-            return
-        self._avatar_enabled = True
-        self.continuous_mode.set(True)
-        self._append_chat("[系统] 已连接 OpenClaw：已自动启用虚拟形象与连续语音模式。")
 
     def _auto_discover_openclaw(self) -> None:
-        if self._discovering:
-            return
-        self._discovering = True
-        self.endpoint_var.set("自动检测中...")
-
         def _job() -> None:
-            client = discover_openclaw(ports=(3000, 5173, 8000, 8080, 11434, 5000, 7860))
-
-            def _finish() -> None:
-                self._discovering = False
-                self._set_connected(client)
-                if client:
-                    self._append_chat(f"[系统] 自动连接到 OpenClaw: {client.endpoint.base_url}")
-                else:
-                    self._append_chat("[系统] 自动检测完成：未发现 OpenClaw 服务，可点击“启动模拟OpenClaw”先测试。")
-
-            self.after(0, _finish)
+            client = discover_openclaw()
+            self.after(0, lambda: self._set_connected(client))
+            if client:
+                self.after(0, lambda: self._append_chat(f"[系统] 自动连接到 OpenClaw: {client.endpoint.base_url}"))
+            else:
+                self.after(0, lambda: self._append_chat("[系统] 未自动发现 OpenClaw 服务，当前使用本地离线回复。"))
 
         threading.Thread(target=_job, daemon=True).start()
-
-
-    def _start_mock_openclaw(self) -> None:
-        if self.mock_server is None:
-            self.mock_server = MockOpenClawServer()
-            self.mock_server.start()
-        url = self.mock_server.base_url
-        self.endpoint_var.set(url)
-        self._append_chat(f"[系统] 模拟OpenClaw已启动: {url}")
-        self._manual_connect_openclaw()
 
     def _manual_connect_openclaw(self) -> None:
         url = self.endpoint_var.get().strip()
@@ -252,67 +198,14 @@ class OpenClawApp(tk.Tk):
             self.avatar_canvas.delete("all")
             if ext == ".png":
                 self.avatar_photo = tk.PhotoImage(file=path)
-                self.avatar_canvas.create_image(110, 110, image=self.avatar_photo)
+                self.avatar_canvas.create_image(90, 90, image=self.avatar_photo)
             else:
                 self._draw_default_avatar()
-                self.avatar_canvas.create_text(110, 18, text=f"已上传: {Path(path).name}", fill="#333")
+                self.avatar_canvas.create_text(90, 20, text=f"已上传: {Path(path).name}", fill="#333")
             self._append_chat(f"[系统] 头像已更新: {Path(path).name}")
             self._refresh_avatar_meta()
         except Exception as exc:
             messagebox.showerror("上传失败", str(exc))
-
-
-    def _apply_reference_avatar(self) -> None:
-        avatar = self.engine.apply_reference_avatar_preset()
-        self.style_var.set(avatar.style)
-        # Draw a more anime-like default preview to match the user reference style.
-        c = self.avatar_canvas
-        c.delete("all")
-        c.create_oval(55, 28, 165, 138, fill="#ffe4f1", outline="#d48cb8", width=2)
-        c.create_oval(82, 75, 96, 89, fill="#6a4c93")
-        c.create_oval(124, 75, 138, 89, fill="#6a4c93")
-        c.create_arc(90, 92, 132, 118, start=200, extent=140, style="arc", width=3, outline="#d4699a")
-        c.create_rectangle(44, 140, 176, 212, fill="#c8b0ff", outline="#9f8bdc")
-        c.create_text(110, 205, text="Neon Girl", fill="#5bc7ff", font=("Arial", 12, "bold"))
-
-        self._append_chat("[系统] 已应用参考图风格人物：霓虹潮流女孩（可继续上传3D模型进行高质量预览）。")
-        self._refresh_avatar_meta()
-
-    def _upload_3d_model(self) -> None:
-        path = filedialog.askopenfilename(
-            title="选择3D模型",
-            filetypes=[("3D Model", "*.glb *.gltf *.obj *.fbx"), ("All", "*.*")],
-        )
-        if not path:
-            return
-        self.engine.avatar.model_path = path
-        self._append_chat(f"[系统] 3D模型已加载: {Path(path).name}")
-        self._refresh_avatar_meta()
-
-    def _open_3d_preview(self) -> None:
-        model_path = self.engine.avatar.model_path
-        if not model_path:
-            messagebox.showwarning("提示", "请先上传3D模型（建议 .glb）")
-            return
-
-        path_uri = Path(model_path).resolve().as_uri()
-        html = f"""
-<!doctype html>
-<html>
-<head>
-  <meta charset='utf-8'>
-  <script type='module' src='https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js'></script>
-  <style>body{{margin:0;background:#111}} model-viewer{{width:100vw;height:100vh;}}</style>
-</head>
-<body>
-  <model-viewer src='{path_uri}' camera-controls auto-rotate shadow-intensity='1'></model-viewer>
-</body>
-</html>
-"""
-        tmp = Path(tempfile.gettempdir()) / "openclaw_3d_preview.html"
-        tmp.write_text(html, encoding="utf-8")
-        webbrowser.open(tmp.as_uri())
-        self._append_chat("[系统] 已在浏览器打开3D预览（model-viewer）。")
 
     def _generate_avatar(self) -> None:
         path = self.engine.avatar.image_path
@@ -385,6 +278,7 @@ class OpenClawApp(tk.Tk):
                     text = self.voice.listen_once(timeout=4, phrase_time_limit=10)
                     self.after(0, lambda t=text: self._on_voice_text(t))
                 except Exception:
+                    # Continuous mode tolerates silence/timeouts.
                     continue
 
         threading.Thread(target=_loop, daemon=True).start()

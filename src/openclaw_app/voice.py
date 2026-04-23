@@ -1,19 +1,22 @@
 from __future__ import annotations
 
-import importlib
 import threading
 from typing import Callable
+
+try:
+    import pyttsx3  # type: ignore
+except Exception:
+    pyttsx3 = None
+
+try:
+    import speech_recognition as sr  # type: ignore
+except Exception:
+    sr = None
 
 
 class VoiceService:
     def __init__(self) -> None:
-        pyttsx3_spec = importlib.util.find_spec("pyttsx3")
-        sr_spec = importlib.util.find_spec("speech_recognition")
-
-        self._pyttsx3 = importlib.import_module("pyttsx3") if pyttsx3_spec else None
-        self._sr = importlib.import_module("speech_recognition") if sr_spec else None
-
-        self._tts = self._pyttsx3.init() if self._pyttsx3 else None
+        self._tts = pyttsx3.init() if pyttsx3 else None
 
     @property
     def tts_enabled(self) -> bool:
@@ -21,7 +24,7 @@ class VoiceService:
 
     @property
     def stt_enabled(self) -> bool:
-        return self._sr is not None
+        return sr is not None
 
     def speak_async(self, text: str, on_done: Callable[[], None]) -> None:
         def _worker() -> None:
@@ -39,11 +42,11 @@ class VoiceService:
             self._tts.stop()
 
     def listen_once(self, timeout: int = 5, phrase_time_limit: int = 12) -> str:
-        if self._sr is None:
+        if sr is None:
             raise RuntimeError("speech_recognition 未安装，无法使用麦克风识别")
 
-        recognizer = self._sr.Recognizer()
-        with self._sr.Microphone() as source:
+        recognizer = sr.Recognizer()
+        with sr.Microphone() as source:
             recognizer.adjust_for_ambient_noise(source, duration=0.8)
             audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_time_limit)
 
@@ -53,6 +56,7 @@ class VoiceService:
         except Exception as exc:
             errors.append(f"Google识别失败: {exc}")
 
+        # Optional offline fallback.
         try:
             return recognizer.recognize_sphinx(audio, language="zh-CN")
         except Exception as exc:

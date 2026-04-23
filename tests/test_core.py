@@ -30,14 +30,6 @@ class ConversationEngineTests(unittest.TestCase):
         engine.after_reply()
         self.assertEqual(engine.state, "listening")
 
-
-    def test_apply_reference_avatar_preset(self):
-        engine = ConversationEngine()
-        avatar = engine.apply_reference_avatar_preset()
-        self.assertEqual(avatar.name, "霓虹潮流女孩")
-        self.assertEqual(avatar.model_id, "preset_neon_girl_v1")
-        self.assertEqual(avatar.avatar_type, "generated")
-
     def test_set_avatar_image(self):
         engine = ConversationEngine()
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
